@@ -1180,11 +1180,44 @@ EOF
   newgrp docker <<END
 
 set -e
-docker compose up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate
-docker compose wait formbricks-migrate
-docker compose --profile authzed-ops run --rm authzed-ops upgrade prepare
-docker compose --profile authzed-ops run --rm authzed-ops upgrade check
-docker compose up -d
+
+run_compose_startup_step() {
+    local step="\$1"
+    shift
+    local services=()
+
+    while [[ \$# -gt 0 && \$1 != "--" ]]; do
+        services+=("\$1")
+        shift
+    done
+    shift
+
+    if docker compose "\$@"; then
+        return 0
+    else
+        local exit_status=\$?
+    fi
+
+    echo "❌ \$step failed with exit status \$exit_status." >&2
+    if [[ \${#services[@]} -gt 0 ]]; then
+        local service
+        for service in "\${services[@]}"; do
+            echo "Recent logs for Compose service '\$service':" >&2
+            docker compose logs --no-color --tail 100 "\$service" >&2 || true
+        done
+    else
+        echo "Recent Docker Compose logs:" >&2
+        docker compose logs --no-color --tail 100 >&2 || true
+    fi
+
+    return "\$exit_status"
+}
+
+run_compose_startup_step "Initial Compose startup" postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate -- up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate
+run_compose_startup_step "Waiting for Formbricks migration" formbricks-migrate -- wait formbricks-migrate
+run_compose_startup_step "AuthZed preparation" authzed-ops -- --profile authzed-ops run --rm authzed-ops upgrade prepare
+run_compose_startup_step "AuthZed check" authzed-ops -- --profile authzed-ops run --rm authzed-ops upgrade check
+run_compose_startup_step "Final Compose startup" -- up -d
 
 echo "🔗 To edit more variables and deeper config, go to the formbricks/docker-compose.yml, edit the file, and restart the container!"
 

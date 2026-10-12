@@ -113,6 +113,60 @@ const getDockerComposeProcessEnv = (overrides: NodeJS.ProcessEnv = {}): NodeJS.P
   return { ...environment, ...overrides };
 };
 
+const getInstallStartupScript = (): string => {
+  const script = readFileSync(formbricksScriptPath, "utf8");
+  const heredocStart = script.indexOf("newgrp docker <<END\n");
+  const startupStart = script.indexOf("\n", heredocStart) + 1;
+  const startupEnd = script.indexOf("\nEND\n", startupStart);
+
+  expect(heredocStart).toBeGreaterThanOrEqual(0);
+  expect(startupEnd).toBeGreaterThan(startupStart);
+
+  return script.slice(startupStart, startupEnd).replace(/\\\$/g, "$");
+};
+
+const runInstallStartup = (failedCommand?: string, failureStatus = 1) => {
+  const tempDir = createTempDir();
+  const binDir = join(tempDir, "bin");
+  const commandLog = join(tempDir, "commands.log");
+  const dockerPath = join(binDir, "docker");
+  mkdirSync(binDir);
+  writeFileSync(
+    dockerPath,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+if [ "$1" = "compose" ]; then
+  shift
+  case "$*" in
+    *"logs --no-color --tail 100"*) printf 'mock logs for %s\\n' "$*" ; exit 0 ;;
+  esac
+  if [ "$*" = "$FAIL_COMPOSE_COMMAND" ]; then
+    exit "$FAIL_COMPOSE_STATUS"
+  fi
+fi
+exit 0
+`,
+    { mode: 0o700 }
+  );
+
+  const result = spawnSync("bash", ["-c", getInstallStartupScript()], {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      COMMAND_LOG: commandLog,
+      FAIL_COMPOSE_COMMAND: failedCommand ?? "",
+      FAIL_COMPOSE_STATUS: String(failureStatus),
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    },
+  });
+
+  return {
+    result,
+    commands: readFileSync(commandLog, "utf8").trim().split("\n"),
+  };
+};
+
 const runDockerCompose = (args: string[], environment: NodeJS.ProcessEnv = {}): string => {
   const result = spawnSync("docker", ["compose", ...args], {
     encoding: "utf8",
@@ -957,15 +1011,106 @@ describe("docker/formbricks.sh AuthZed setup", () => {
 
   test("waits for the source migration before preparing a fresh AuthZed graph", () => {
     const script = readFileSync(formbricksScriptPath, "utf8");
-    const setupStart = script.indexOf(
-      "docker compose up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate"
+    const initialStartup = script.indexOf(
+      'run_compose_startup_step "Initial Compose startup" postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate -- up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate'
     );
-    const migrationWait = script.indexOf("docker compose wait formbricks-migrate", setupStart);
-    const upgradePrepare = script.indexOf("authzed-ops upgrade prepare", setupStart);
+    const migrationWait = script.indexOf(
+      'run_compose_startup_step "Waiting for Formbricks migration" formbricks-migrate -- wait formbricks-migrate'
+    );
+    const upgradePrepare = script.indexOf(
+      'run_compose_startup_step "AuthZed preparation" authzed-ops -- --profile authzed-ops run --rm authzed-ops upgrade prepare'
+    );
+    const upgradeCheck = script.indexOf(
+      'run_compose_startup_step "AuthZed check" authzed-ops -- --profile authzed-ops run --rm authzed-ops upgrade check'
+    );
+    const finalStartup = script.indexOf('run_compose_startup_step "Final Compose startup" -- up -d');
 
-    expect(setupStart).toBeGreaterThanOrEqual(0);
-    expect(migrationWait).toBeGreaterThan(setupStart);
+    expect(initialStartup).toBeGreaterThanOrEqual(0);
+    expect(migrationWait).toBeGreaterThan(initialStartup);
     expect(upgradePrepare).toBeGreaterThan(migrationWait);
+    expect(upgradeCheck).toBeGreaterThan(upgradePrepare);
+    expect(finalStartup).toBeGreaterThan(upgradeCheck);
+  });
+
+  test.each([
+    {
+      command: "up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate",
+      status: 17,
+      step: "Initial Compose startup",
+      services: ["postgres", "authzed-db-bootstrap", "spicedb-migrate", "spicedb", "formbricks-migrate"],
+    },
+    {
+      command: "wait formbricks-migrate",
+      status: 23,
+      step: "Waiting for Formbricks migration",
+      services: ["formbricks-migrate"],
+    },
+    {
+      command: "--profile authzed-ops run --rm authzed-ops upgrade prepare",
+      status: 31,
+      step: "AuthZed preparation",
+      services: ["authzed-ops"],
+    },
+    {
+      command: "--profile authzed-ops run --rm authzed-ops upgrade check",
+      status: 37,
+      step: "AuthZed check",
+      services: ["authzed-ops"],
+    },
+    {
+      command: "up -d",
+      status: 41,
+      step: "Final Compose startup",
+      services: [],
+    },
+  ])("reports $step failures and stops startup", ({ command, status, step, services }) => {
+    const { result, commands } = runInstallStartup(command, status);
+
+    expect(result.status).toBe(status);
+    expect(result.stderr).toContain(`❌ ${step} failed with exit status ${status}.`);
+    expect(result.stderr).toContain("mock logs for");
+
+    if (services.length > 0) {
+      for (const service of services) {
+        expect(result.stderr).toContain(`Recent logs for Compose service '${service}':`);
+        expect(commands).toContain(`compose logs --no-color --tail 100 ${service}`);
+      }
+    } else {
+      expect(result.stderr).toContain("Recent Docker Compose logs:");
+      expect(commands).toContain("compose logs --no-color --tail 100");
+    }
+
+    const startupCommands = [
+      "up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate",
+      "wait formbricks-migrate",
+      "--profile authzed-ops run --rm authzed-ops upgrade prepare",
+      "--profile authzed-ops run --rm authzed-ops upgrade check",
+      "up -d",
+    ].map((composeCommand) => `compose ${composeCommand}`);
+    const failedCommandIndex = startupCommands.indexOf(`compose ${command}`);
+
+    expect(failedCommandIndex).toBeGreaterThanOrEqual(0);
+    expect(commands.slice(0, failedCommandIndex + 1)).toEqual(
+      startupCommands.slice(0, failedCommandIndex + 1)
+    );
+    for (const laterCommand of startupCommands.slice(failedCommandIndex + 1)) {
+      expect(commands).not.toContain(laterCommand);
+    }
+    expect(result.stdout).not.toContain("🎉 All done!");
+  });
+
+  test("completes all Compose startup steps in order when each succeeds", () => {
+    const { result, commands } = runInstallStartup();
+
+    expect(result.status).toBe(0);
+    expect(commands).toEqual([
+      "compose up -d postgres authzed-db-bootstrap spicedb-migrate spicedb formbricks-migrate",
+      "compose wait formbricks-migrate",
+      "compose --profile authzed-ops run --rm authzed-ops upgrade prepare",
+      "compose --profile authzed-ops run --rm authzed-ops upgrade check",
+      "compose up -d",
+    ]);
+    expect(result.stdout).toContain("🎉 All done!");
   });
 
   test("pins and verifies the downloaded bootstrap helper before making it executable", () => {
