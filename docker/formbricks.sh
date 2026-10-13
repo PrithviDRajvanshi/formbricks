@@ -349,8 +349,9 @@ EOF
   append_if_missing "AUTHZED_TOKEN" "$authzed_token"
   append_if_missing "AUTHZED_DATABASE_PASSWORD" "$authzed_database_password"
   append_if_missing "AUTHZED_ENABLED" "true"
+  append_if_missing "AUTHZED_ENDPOINT" "spicedb:50051"
+  append_if_missing "AUTHZED_SYSTEM_KEY" "formbricks"
   append_if_missing "AUTHZED_CONSISTENCY" "fully_consistent"
-  append_if_missing "FORMBRICKS_AUTHZED_V6_MIGRATION_ACKNOWLEDGED" "true"
 
   chmod 600 "$tmp_file"
   mv "$tmp_file" "$env_file"
@@ -378,6 +379,9 @@ add_formbricks_traefik_labels() {
 
   if ! awk -v domain_name="$formbricks_domain_name" -v hsts_enabled="$formbricks_hsts_enabled" -v https_setup="$formbricks_https_setup" '
 BEGIN { in_formbricks = 0; inserted = 0 }
+{
+    sub(/\r$/, "")
+}
 /^  formbricks:$/ { in_formbricks = 1 }
 in_formbricks && /^  [A-Za-z0-9_-]+:/ && !/^  formbricks:$/ { in_formbricks = 0 }
 {

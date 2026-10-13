@@ -349,7 +349,7 @@ migrate_legacy_valkey_image "$2"`,
 };
 
 const getServiceBlock = (composeContents: string, serviceName: string): string => {
-  const lines = composeContents.split("\n");
+  const lines = composeContents.split(/\r?\n/);
   const startIndex = lines.findIndex((line) => line === `  ${serviceName}:`);
 
   expect(startIndex).toBeGreaterThanOrEqual(0);
@@ -855,8 +855,10 @@ describe("docker/formbricks.sh AuthZed setup", () => {
     expect(env.get("AUTHZED_TOKEN")).toBe(authzedToken);
     expect(env.get("AUTHZED_DATABASE_PASSWORD")).toBe(authzedDatabasePassword);
     expect(env.get("AUTHZED_ENABLED")).toBe("true");
+    expect(env.get("AUTHZED_ENDPOINT")).toBe("spicedb:50051");
+    expect(env.get("AUTHZED_SYSTEM_KEY")).toBe("formbricks");
     expect(env.get("AUTHZED_CONSISTENCY")).toBe("fully_consistent");
-    expect(env.get("FORMBRICKS_AUTHZED_V6_MIGRATION_ACKNOWLEDGED")).toBe("true");
+
     expect(statSync(envPath).mode & 0o777).toBe(0o600);
   });
 
