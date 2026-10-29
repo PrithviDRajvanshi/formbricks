@@ -66,6 +66,27 @@ jobs:
       - name: Run AuthZed application and persistence smoke test
         run: bash docker/authzed-smoke.sh
 
+  validate-traefik-auth:
+    name: Validate One-Click Traefik Auth Routes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run one-click Traefik auth-route smoke test
+        run: bash docker/traefik-auth-smoke.sh
+
   validate-docker-build:
     name: Validate Docker Build
     runs-on: ubuntu-latest
@@ -106,6 +127,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up image browser checks
+        uses: ./.github/actions/setup-image-smoke
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -158,6 +182,9 @@ jobs:
           pull: true
           push: false
           load: true
+          build-args: |
+            FORMBRICKS_DEPLOYMENT_ID=${{ github.sha }}-pr
+            FORMBRICKS_BUILD_VARIANT=pr
           tags: formbricks-test:${{ github.sha }}
           secrets: |
             database_url=${{ secrets.DUMMY_DATABASE_URL }}
@@ -178,6 +205,9 @@ jobs:
           file: ./apps/web/Dockerfile
           push: false
           load: true
+          build-args: |
+            FORMBRICKS_DEPLOYMENT_ID=${{ github.sha }}-pr
+            FORMBRICKS_BUILD_VARIANT=pr
           tags: formbricks-test:${{ env.GITHUB_SHA }}
           secrets: |
             database_url=${{ secrets.DUMMY_DATABASE_URL }}
@@ -187,6 +217,18 @@ jobs:
             hub_api_key=build-time-placeholder
             cubejs_api_url=http://localhost:4000
             cubejs_api_secret=build-time-placeholder
+
+      - name: Verify assembled Next runtime
+        env:
+          IMAGE: formbricks-test:${{ github.sha }}
+          BUILD_IDENTITY: ${{ github.sha }}-pr
+        run: docker run --rm --network none --entrypoint node "$IMAGE" verify-next-runtime.mjs "$BUILD_IDENTITY" pr
+
+      # Node must trust the OS CA bundle, or a CA-package fix such as the eMudhra distrust never reaches it.
+      - name: Verify Node trusts the OS CA bundle
+        env:
+          IMAGE: formbricks-test:${{ github.sha }}
+        run: bash apps/web/scripts/docker/verify-tls-image.sh "$IMAGE"
 
       - name: Verify Runtime Image Excludes npm
         shell: bash
@@ -504,7 +546,13 @@ jobs:
           fi
 
       - name: Verify and Initialize PostgreSQL
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+          REDIS_SERVICE_ID: ${{ job.services.redis.id }}
         run: |
+          # Runner hardening can restart Docker after Actions creates the service containers.
+          # Restore only this job's fixtures before testing the application against them.
+          docker start "$POSTGRES_SERVICE_ID" "$REDIS_SERVICE_ID"
           echo "Verifying PostgreSQL connection..."
           # Install PostgreSQL client to test connection
           sudo apt-get update && sudo apt-get install -y postgresql-client
@@ -560,6 +608,8 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           DUMMY_ENCRYPTION_KEY: ${{ secrets.DUMMY_ENCRYPTION_KEY }}
         run: |
+          set -euo pipefail
+          trap 'docker rm -f formbricks-test >/dev/null 2>&1 || true' EXIT
           echo "🧪 Testing if the Docker image starts correctly..."
 
           # Add extra docker run args to support host.docker.internal on Linux
@@ -589,8 +639,6 @@ jobs:
           MAX_RETRIES=60  # 60 attempts × 5 seconds = 5 minutes
           RETRY_COUNT=0
           HEALTH_CHECK_SUCCESS=false
-
-          set +e  # Disable exit on error to allow for retries
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -622,6 +670,12 @@ jobs:
             sleep 5
           done
 
+          if [ "$HEALTH_CHECK_SUCCESS" != "true" ]; then
+            echo "❌ Health check failed after $((MAX_RETRIES * 5)) seconds (5 minutes)"
+            docker logs formbricks-test || true
+            exit 1
+          fi
+
           # Show full container logs for debugging and verify startup work ran exactly once
           echo "📋 Full container logs:"
           CONTAINER_LOGS="$(docker logs formbricks-test 2>&1)"
@@ -641,14 +695,8 @@ jobs:
           assert_log_once "Running database migrations"
           assert_log_once "Running SAML database setup"
 
-          # Clean up the container
-          echo "🧹 Cleaning up..."
-          docker rm -f formbricks-test
-
-          # Exit with failure if health check did not succeed
-          if [ "$HEALTH_CHECK_SUCCESS" != "true" ]; then
-            echo "❌ Health check failed after $((MAX_RETRIES * 5)) seconds (5 minutes)"
-            exit 1
-          fi
+          # Exercise browser hydration against the image, not a separate Next build.
+          PGPASSWORD=test psql -h localhost -U test -d formbricks -v ON_ERROR_STOP=1 -f docker/fixtures/image-smoke.sql
+          node docker/smoke-next-browser.mjs http://localhost:3000
 
           echo "✨ Docker validation complete - all checks passed!"

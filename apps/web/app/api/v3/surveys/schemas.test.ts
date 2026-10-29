@@ -11,6 +11,7 @@ import {
   V3_SURVEY_MAX_TRIGGERS,
   V3_SURVEY_MAX_VARIABLES,
   ZV3CreateSurveyBody,
+  ZV3CreateSurveyQuery,
   ZV3EditSurveyBlocksBody,
   ZV3PatchSurveyBody,
   ZV3SetSurveyBlockOrderBody,
@@ -449,11 +450,23 @@ describe("ZV3CreateSurveyBody", () => {
       displayPercentage: null,
       displayLimit: null,
       autoClose: null,
+      keepEndingCardOpen: false,
       autoComplete: null,
       delay: 0,
       triggers: [{ actionClassId: "claa1234567890123456789012" }],
     });
     expect(result.targeting).toEqual({ filters: [] });
+  });
+
+  test("accepts keepEndingCardOpen in distribution and rejects a non-boolean", () => {
+    const base = { ...validCreateBody, type: "app" as const };
+
+    expect(
+      ZV3CreateSurveyBody.parse({ ...base, distribution: { keepEndingCardOpen: true } }).distribution
+    ).toMatchObject({ keepEndingCardOpen: true });
+    expect(
+      ZV3CreateSurveyBody.safeParse({ ...base, distribution: { keepEndingCardOpen: "yes" } }).success
+    ).toBe(false);
   });
 
   test("rejects distribution and targeting on link surveys", () => {
@@ -512,6 +525,91 @@ describe("ZV3CreateSurveyBody", () => {
       distribution: { displayOption: "displaySome", displayLimit: 0 },
     });
     expect(zeroLimit.success).toBe(false);
+  });
+
+  describe("distribution.showConditions", () => {
+    const cmsRule = {
+      id: "grp1",
+      connector: "and",
+      conditions: [
+        {
+          id: "cnd1",
+          leftOperand: { type: "page", value: "currentUrl" },
+          operator: "containsAnyOf",
+          rightOperand: { type: "static", value: ["/plan-compare", "/drug-coverage"] },
+        },
+        {
+          id: "grp2",
+          connector: "or",
+          conditions: [
+            {
+              id: "cnd2",
+              leftOperand: { type: "visit", value: "timeOnSite" },
+              operator: "isGreaterThanOrEqual",
+              rightOperand: { type: "static", value: 120 },
+            },
+            {
+              id: "cnd3",
+              leftOperand: { type: "visit", value: "pagesViewed" },
+              operator: "isGreaterThanOrEqual",
+              rightOperand: { type: "static", value: 3 },
+            },
+          ],
+        },
+      ],
+    };
+
+    test("accepts a rule and defaults to null when omitted", () => {
+      const withRule = ZV3CreateSurveyBody.safeParse({
+        ...validCreateBody,
+        type: "app",
+        distribution: { showConditions: cmsRule },
+      });
+      const without = ZV3CreateSurveyBody.safeParse({ ...validCreateBody, type: "app", distribution: {} });
+
+      expect(withRule.success && withRule.data.distribution?.showConditions).toEqual(cmsRule);
+      expect(without.success && without.data.distribution?.showConditions).toBeNull();
+    });
+
+    test("stores an empty group as null", () => {
+      const result = ZV3CreateSurveyBody.safeParse({
+        ...validCreateBody,
+        type: "app",
+        distribution: { showConditions: { id: "grp1", connector: "and", conditions: [] } },
+      });
+
+      expect(result.success && result.data.distribution?.showConditions).toBeNull();
+    });
+
+    test("refuses a condition that cannot work, pointing at the field", () => {
+      const result = ZV3CreateSurveyBody.safeParse({
+        ...validCreateBody,
+        type: "app",
+        distribution: {
+          showConditions: {
+            id: "grp1",
+            connector: "and",
+            conditions: [
+              {
+                id: "cnd1",
+                leftOperand: { type: "visit", value: "pagesViewed" },
+                operator: "contains",
+                rightOperand: { type: "static", value: "3" },
+              },
+            ],
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(formatV3ZodInvalidParams(result.error, "body")).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: "distribution.showConditions.conditions.0.operator" }),
+          ])
+        );
+      }
+    });
   });
 
   test("accepts displayPercentage with any displayOption (independent throttle)", () => {
@@ -1313,5 +1411,21 @@ describe("top-level array bounds (ENG-3384)", () => {
     expect(json.properties.distribution).toMatchObject({
       properties: { triggers: expect.objectContaining({ maxItems: V3_SURVEY_MAX_TRIGGERS }) },
     });
+  });
+});
+
+describe("ZV3CreateSurveyQuery", () => {
+  // Spelled out rather than read from the schema's own list, so dropping a value the dashboard sends —
+  // `import` comes from the Qualtrics import dialog (ENG-3653) — fails here.
+  test.each(["blank", "template", "xm-template", "ai", "import"])("accepts createdFrom=%s", (createdFrom) => {
+    expect(ZV3CreateSurveyQuery.safeParse({ createdFrom }).success).toBe(true);
+  });
+
+  test("accepts a create with no createdFrom", () => {
+    expect(ZV3CreateSurveyQuery.safeParse({}).success).toBe(true);
+  });
+
+  test("rejects an unknown createdFrom, so analytics never records an invented source", () => {
+    expect(ZV3CreateSurveyQuery.safeParse({ createdFrom: "qualtrics" }).success).toBe(false);
   });
 });

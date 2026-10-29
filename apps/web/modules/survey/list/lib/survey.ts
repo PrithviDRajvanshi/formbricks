@@ -97,8 +97,10 @@ const getExistingSurvey = async (surveyId: string) => {
       redirectUrl: true,
       autoComplete: true,
       autoClose: true,
+      keepEndingCardOpen: true,
       delay: true,
       displayPercentage: true,
+      showConditions: true,
       showLanguageSwitch: true,
       autoSelectLanguage: true,
       pin: true,
@@ -463,6 +465,7 @@ export const copySurveyToOtherWorkspace = async (
       },
       owner: { connect: { id: userId } },
       visibility: creationFacts.visibility,
+      ownershipInitialized: true,
       surveyClosedMessage: existingSurvey.surveyClosedMessage
         ? structuredClone(existingSurvey.surveyClosedMessage)
         : Prisma.JsonNull,
@@ -471,6 +474,10 @@ export const copySurveyToOtherWorkspace = async (
         ? structuredClone(existingSurvey.workspaceOverwrites)
         : Prisma.JsonNull,
       styling: existingSurvey.styling ? structuredClone(existingSurvey.styling) : Prisma.JsonNull,
+      // Holds no ids, so it copies to another workspace as it is.
+      showConditions: existingSurvey.showConditions
+        ? structuredClone(existingSurvey.showConditions)
+        : Prisma.DbNull,
       // "replace" means "run only this survey's scripts, not the workspace's". In another workspace
       // that would silently switch off the target's own head scripts (analytics, consent), so the
       // copy keeps its scripts but adds them to the target's instead.

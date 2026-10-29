@@ -6,6 +6,11 @@ FROM node:24-alpine3.23 AS base
 
 # Node's official binary embeds OpenSSL, so apk upgrades cannot patch its TLS implementation.
 # Keep Node 24's current Undici fixes while linking its runtime to Alpine's patched OpenSSL/zlib.
+#
+# --openssl-use-def-ca-store makes Node trust the OS CA bundle (Alpine's ca-certificates) instead of the
+# Mozilla list compiled into the binary. It is the build-time form of --use-openssl-ca, so unlike a
+# NODE_OPTIONS value it survives a deployment that sets its own NODE_OPTIONS. Without it a CA-package fix,
+# such as the compromised eMudhra intermediates (ENG-4065), never reaches Node.
 FROM alpine:3.23 AS node-runtime-builder
 ARG NODE_VERSION=24.21.0
 ARG NODE_SOURCE_SHA256=a6f54defb6fd7c84f41dba13d61e78e9b4e0961712cf61f29715c05f5ced94fc
@@ -17,16 +22,18 @@ RUN curl --proto '=https' --proto-redir '=https' --fail --location --retry 3 \
       --output node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}.tar.xz" \
     && echo "${NODE_SOURCE_SHA256}  node.tar.xz" | sha256sum -c - \
     && tar -xJf node.tar.xz --strip-components=1 \
-    && ./configure --shared-openssl --shared-zlib --without-npm
+    && ./configure --shared-openssl --shared-zlib --openssl-use-def-ca-store --without-npm
 # Compile within the build layer; release binaries must not read shared writable compiler objects.
 RUN make -j${NODE_BUILD_JOBS} \
     && install -m 755 out/Release/node /usr/local/bin/node
 RUN install -D -m 644 LICENSE /usr/local/share/doc/node/LICENSE
 
+# Node reads its trust store from these packages (see node-runtime-builder), so the CA pin is a security
+# control: 20261020-r0 is the first Alpine release that distrusts the compromised eMudhra root.
 FROM alpine:3.23 AS runtime-base
 RUN apk update && apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates libgcc libstdc++ \
-      "libssl3>=3.5.9-r0" "libcrypto3>=3.5.9-r0" "zlib>=1.3.2-r1"
+    && apk add --no-cache "ca-certificates>=20261020-r0" "ca-certificates-bundle>=20261020-r0" \
+      "libcrypto3>=3.5.9-r0" libgcc "libssl3>=3.5.9-r0" libstdc++ "zlib>=1.3.2-r1"
 COPY --from=node-runtime-builder /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime-builder /usr/local/share/doc/node/LICENSE /usr/local/share/doc/node/LICENSE
 COPY apps/web/scripts/docker/verify-runtime.mjs /tmp/verify-runtime.mjs
@@ -107,6 +114,10 @@ RUN touch apps/web/.env
 RUN --mount=type=secret,id=database_url \
     /tmp/read-secrets.sh pnpm build --filter=@formbricks/database
 
+# Public inputs participate in Docker cache keys; credentials remain secret mounts.
+ARG FORMBRICKS_DEPLOYMENT_ID=""
+ARG FORMBRICKS_BUILD_VARIANT="local"
+
 # Build the project using our secret reader script
 # This mounts the secrets only during this build step without storing them in layers
 RUN --mount=type=secret,id=database_url \
@@ -118,7 +129,7 @@ RUN --mount=type=secret,id=database_url \
     --mount=type=secret,id=cubejs_api_secret \
     --mount=type=secret,id=sentry_auth_token \
     --mount=type=secret,id=posthog_key \
-    /tmp/read-secrets.sh pnpm build --filter=@formbricks/web...
+    /tmp/read-secrets.sh node apps/web/scripts/docker/build-next-runtime.mjs
 
 #
 ## step 2: setup production runner
@@ -132,8 +143,13 @@ RUN addgroup -S nextjs \
 WORKDIR /home/nextjs
 
 # Ensure no write permissions are assigned to the copied resources
-COPY --from=installer /app/apps/web/.next/standalone ./
-RUN chown -R nextjs:nextjs ./ && chmod -R 755 ./
+ARG FORMBRICKS_DEPLOYMENT_ID=""
+ARG FORMBRICKS_BUILD_VARIANT="local"
+LABEL com.formbricks.build.identity=$FORMBRICKS_DEPLOYMENT_ID
+LABEL com.formbricks.build.variant=$FORMBRICKS_BUILD_VARIANT
+COPY --from=installer /app/next-runtime ./
+RUN node verify-next-runtime.mjs "$FORMBRICKS_DEPLOYMENT_ID" "$FORMBRICKS_BUILD_VARIANT" \
+    && chown -R nextjs:nextjs ./ && chmod -R 755 ./
 
 COPY --from=installer /app/apps/web/next.config.mjs .
 RUN chmod 644 ./next.config.mjs
@@ -157,12 +173,6 @@ RUN chown root:root /usr/local/bin/formbricks-authzed-prepare && chmod 555 /usr/
 
 COPY --from=installer /app/prisma.config.mjs ./prisma.config.mjs
 RUN chmod 644 ./prisma.config.mjs
-
-COPY --from=installer /app/apps/web/.next/static ./apps/web/.next/static
-RUN chown -R nextjs:nextjs ./apps/web/.next/static && chmod -R 755 ./apps/web/.next/static
-
-COPY --from=installer /app/apps/web/public ./apps/web/public
-RUN chown -R nextjs:nextjs ./apps/web/public && chmod -R 755 ./apps/web/public
 
 # Create packages/database directory structure with proper ownership for runtime migrations
 RUN mkdir -p ./packages/database/.prisma-migrations && chown -R nextjs:nextjs ./packages/database
@@ -382,8 +392,10 @@ ENV HOSTNAME="0.0.0.0"
 USER nextjs
 
 # Prepare volumes for uploads and SAML connections
+# Check the finished filesystem as the runtime user, after all dependency overlays.
 RUN mkdir -p /home/nextjs/apps/web/uploads/ && \
-    mkdir -p /home/nextjs/apps/web/saml-connection
+    mkdir -p /home/nextjs/apps/web/saml-connection && \
+    node verify-next-runtime.mjs "$FORMBRICKS_DEPLOYMENT_ID" "$FORMBRICKS_BUILD_VARIANT"
 
 VOLUME /home/nextjs/apps/web/uploads/
 VOLUME /home/nextjs/apps/web/saml-connection

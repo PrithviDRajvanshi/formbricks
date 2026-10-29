@@ -18,6 +18,7 @@ import { type TI18nString, ZI18nString } from "../i18n";
 import { ZOverlayColor, ZOverlayOpacity } from "../overlay";
 import { isLegacyIdCharset, isLegacyVariableName } from "../safe-identifier";
 import { ZSegment } from "../segment";
+import { ZShowConditions } from "../show-conditions";
 import { ZAllowedFileExtension } from "../storage";
 import { ZBaseStyling } from "../styling";
 import { ZLanguage } from "../workspace";
@@ -935,6 +936,10 @@ export const ZSurveyBase = z.object({
   status: ZSurveyStatus,
   displayOption: ZSurveyDisplayOption,
   autoClose: z.number().nullable(),
+  // App surveys close 3 seconds after the ending card unless this is on, in which case the ending card
+  // stays until the respondent closes it (WCAG 2.2.1). Not the inactivity `autoClose` above. Optional so
+  // surveys built in memory (templates, previews) read as off, matching the column default.
+  keepEndingCardOpen: z.boolean().optional(),
   triggers: z.array(z.object({ actionClass: ZActionClass })),
   // This variable should be called `cooldownPeriod`, not `recontactDays`. It is related to the
   // Survey Cooldown Period feature (across surveys) and not the Recontact Options (per survey).
@@ -1061,6 +1066,12 @@ export const ZSurveyBase = z.object({
    * are ignored and recomputed.
    */
   customCss: ZCustomCssStored.nullish(),
+  /**
+   * App surveys: conditions checked in the browser when a trigger fires (ENG-3873). `null` means no
+   * conditions; an empty group is stored as `null` too. Nullish so survey objects built without it
+   * still type-check.
+   */
+  showConditions: ZShowConditions.nullish(),
 });
 
 /**

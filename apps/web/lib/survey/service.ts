@@ -150,8 +150,10 @@ export const selectSurvey = {
   recontactDays: true,
   displayLimit: true,
   autoClose: true,
+  keepEndingCardOpen: true,
   delay: true,
   displayPercentage: true,
+  showConditions: true,
   autoComplete: true,
   publishOn: true,
   closeOn: true,
@@ -879,6 +881,11 @@ export const updateSurveyInternal = async (
       data.customCss = customCssWrite.stored ?? Prisma.DbNull;
     }
 
+    // A nullable JSON column takes `Prisma.DbNull`, not `null`, to store "no conditions".
+    if (data.showConditions === null) {
+      data.showConditions = Prisma.DbNull;
+    }
+
     delete data.createdBy;
     const persistedSurvey = await prisma.$transaction(
       async (tx) => {
@@ -991,6 +998,7 @@ const attachSurveyCreationFactsToCreateData = (
 ): Omit<Prisma.SurveyCreateInput, "workspace"> => ({
   ...data,
   visibility,
+  ownershipInitialized: true,
   ...(ownerId ? { owner: { connect: { id: ownerId } } } : {}),
 });
 
@@ -1172,6 +1180,7 @@ export const createSurvey = async (
     const baseData = {
       ...restSurveyBody,
       styling: styling === null ? Prisma.JsonNull : styling,
+      showConditions: restSurveyBody.showConditions === null ? Prisma.DbNull : restSurveyBody.showConditions,
       ...normalizeSurveyScheduling({
         closeOn: normalizedCloseOn,
         publishOn: normalizedPublishOn,

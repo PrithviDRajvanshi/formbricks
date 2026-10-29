@@ -38,6 +38,8 @@ export const zInvalidParam = z.strictObject({
       "missing_required_field",
       "misordered_reference",
       "missing_translation",
+      "qsf_limit_exceeded",
+      "qsf_not_recognized",
       "read_only_field",
       "unsupported_field",
       "unsupported_locale",
@@ -378,8 +380,8 @@ export type ResponseAnswerZodType = z.infer<typeof zResponseAnswer>;
  * responses" enabled the field is never captured, so it is absent from the response for every
  * consumer. With anonymization off it is captured and appears here normally.
  *
- * - `redactQuery` is applied on **every** read, anonymization or not — `url` and `pageReferrer` carry
- * their query string stripped.
+ * - `redactQuery` is applied on **every** read, anonymization or not — `url`, `pageReferrer` and
+ * `visitEntryReferrer` carry their query string stripped.
  *
  * - `ipAddress` is **never** projected by this API, in any view. That is a v3 rule rather than a
  * catalog behaviour: the catalog reads the field, and the dashboard shows it. Do not infer the same

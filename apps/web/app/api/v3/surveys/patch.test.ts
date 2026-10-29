@@ -80,6 +80,7 @@ vi.mock("@formbricks/database", () => {
       updateMany: vi.fn(),
     },
     // Interactive transaction: run the callback with the mocked client as the tx client.
+    $executeRaw: vi.fn(),
     $transaction: vi.fn((callback: (tx: typeof prisma) => Promise<unknown>) => callback(prisma)),
   };
   return { prisma };
@@ -281,7 +282,7 @@ describe("patchV3Survey", () => {
     );
     vi.mocked(prisma.survey.findUniqueOrThrow).mockImplementation((() =>
       Promise.resolve(
-        readBackUpdatedSurvey(vi.mocked(prisma.survey.update).mock.lastCall?.[0].data)
+        readBackUpdatedSurvey(vi.mocked(prisma.survey.update).mock.calls.at(0)?.[0].data)
       )) as unknown as typeof prisma.survey.findUniqueOrThrow);
     vi.mocked(prisma.$transaction).mockImplementation(async (callback) => callback(prisma));
     // ENG-1837: the patch reconciles the EmbeddedData rows in the same transaction as the survey
@@ -372,10 +373,7 @@ describe("patchV3Survey", () => {
     );
   });
 
-  test("never writes the dropped legacy columns, and returns the survey read back after the reconcile", async () => {
-    // ENG-2404: `Survey` has no `variables` / `hiddenFields` column, so Prisma would refuse either
-    // key. They reach the database as rows, and the response is re-read after the reconcile so the
-    // projection derived from those rows describes the patched survey rather than the stored one.
+  test("writes compatible legacy columns and returns the survey read back after the reconcile", async () => {
     await patchV3Survey(
       currentSurvey,
       { hiddenFields: { enabled: true, fieldIds: ["utm_source"] } },
@@ -383,9 +381,11 @@ describe("patchV3Survey", () => {
       "org_1"
     );
 
-    const [[updateArgs]] = vi.mocked(prisma.survey.update).mock.calls;
-    expect(updateArgs.data).not.toHaveProperty("variables");
-    expect(updateArgs.data).not.toHaveProperty("hiddenFields");
+    expect(prisma.survey.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ hiddenFields: { enabled: true, fieldIds: ["utm_source"] } }),
+      })
+    );
     expect(vi.mocked(prisma.survey.findUniqueOrThrow).mock.invocationCallOrder[0]).toBeGreaterThan(
       vi.mocked(prisma.surveyEmbeddedData.create).mock.invocationCallOrder[0]
     );
@@ -1045,6 +1045,7 @@ describe("patchV3Survey", () => {
           distribution: {
             displayOption: "displayMultiple",
             recontactDays: 14,
+            keepEndingCardOpen: true,
             triggers: [{ actionClassId: actionClass.id }],
           },
         },
@@ -1057,6 +1058,7 @@ describe("patchV3Survey", () => {
           data: expect.objectContaining({
             displayOption: "displayMultiple",
             recontactDays: 14,
+            keepEndingCardOpen: true,
             triggers: { create: [{ actionClassId: actionClass.id }] },
           }),
         })
@@ -1075,6 +1077,135 @@ describe("patchV3Survey", () => {
           }),
         })
       );
+    });
+
+    describe("show conditions", () => {
+      const finished = {
+        id: "cnd1",
+        leftOperand: { type: "visit", value: "timeOnSite" },
+        operator: "isGreaterThanOrEqual",
+        rightOperand: { type: "static", value: 30 },
+      };
+      const unfinished = {
+        id: "cnd2",
+        leftOperand: { type: "page", value: "currentUrl" },
+        operator: "pathIsAnyOf",
+      };
+      const surveyWithDraftRow = {
+        ...appCurrentSurvey,
+        showConditions: { id: "grp1", connector: "and", conditions: [finished, unfinished] },
+      } as unknown as TSurvey;
+
+      test("a patch that leaves them alone keeps a draft's unfinished row", async () => {
+        // The patch reads the survey without that row; writing its copy back would delete the row.
+        await patchV3Survey(surveyWithDraftRow, { name: "Renamed" }, "req_app_patch_sc1", "org_1");
+
+        const { data } = vi.mocked(prisma.survey.update).mock.calls[0][0];
+        expect(data.name).toBe("Renamed");
+        expect(data).not.toHaveProperty("showConditions");
+      });
+
+      test("a patch that changes them writes them, and null clears them", async () => {
+        vi.mocked(getActionClasses).mockResolvedValue([]);
+        const onPricing = {
+          id: "grp2",
+          connector: "and",
+          conditions: [
+            {
+              id: "cnd3",
+              leftOperand: { type: "page", value: "currentUrl" },
+              operator: "pathIsAnyOf",
+              rightOperand: { type: "static", value: ["/pricing"] },
+            },
+          ],
+        };
+
+        await patchV3Survey(
+          surveyWithDraftRow,
+          { distribution: { triggers: [], showConditions: onPricing } },
+          "req_app_patch_sc2",
+          "org_1"
+        );
+        await patchV3Survey(
+          surveyWithDraftRow,
+          { distribution: { triggers: [], showConditions: null } },
+          "req_app_patch_sc3",
+          "org_1"
+        );
+
+        const writes = vi.mocked(prisma.survey.update).mock.calls.map(([args]) => args.data.showConditions);
+        expect(writes).toEqual([onPricing, Prisma.DbNull]);
+      });
+
+      test("an explicit null clears a draft that holds only an unfinished row", async () => {
+        vi.mocked(getActionClasses).mockResolvedValue([]);
+        const onlyUnfinished = {
+          ...appCurrentSurvey,
+          showConditions: { id: "grp1", connector: "and", conditions: [unfinished] },
+        } as unknown as TSurvey;
+
+        await patchV3Survey(
+          onlyUnfinished,
+          { distribution: { triggers: [], showConditions: null } },
+          "req_app_patch_sc4",
+          "org_1"
+        );
+
+        expect(vi.mocked(prisma.survey.update).mock.calls[0][0].data.showConditions).toBe(Prisma.DbNull);
+      });
+
+      test("taking a draft live with an unfinished row is refused, not published wider", async () => {
+        // Dropping the row would turn "AND[time ≥ 30, unfinished]" into just "time ≥ 30".
+        vi.mocked(getActionClasses).mockResolvedValue([actionClass]);
+        const draftWithTrigger = { ...surveyWithDraftRow, triggers: [{ actionClass }] } as unknown as TSurvey;
+
+        const error = await patchV3Survey(
+          draftWithTrigger,
+          { status: "inProgress" },
+          "req_app_patch_sc5",
+          "org_1"
+        ).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(V3SurveyReferenceValidationError);
+        expect((error as V3SurveyReferenceValidationError).invalidParams[0].name).toBe(
+          "distribution.showConditions"
+        );
+        expect(prisma.survey.update).not.toHaveBeenCalled();
+      });
+
+      test("taking a draft live with only finished rows writes them", async () => {
+        vi.mocked(getActionClasses).mockResolvedValue([actionClass]);
+        const finishedDraft = {
+          ...appCurrentSurvey,
+          triggers: [{ actionClass }],
+          showConditions: { id: "grp1", connector: "and", conditions: [finished] },
+        } as unknown as TSurvey;
+
+        await patchV3Survey(finishedDraft, { status: "inProgress" }, "req_app_patch_sc6", "org_1");
+
+        expect(vi.mocked(prisma.survey.update).mock.calls[0][0].data.showConditions).toEqual({
+          id: "grp1",
+          connector: "and",
+          conditions: [finished],
+        });
+      });
+
+      test("sending distribution with the publish replaces the unfinished row instead", async () => {
+        vi.mocked(getActionClasses).mockResolvedValue([actionClass]);
+        const draftWithTrigger = { ...surveyWithDraftRow, triggers: [{ actionClass }] } as unknown as TSurvey;
+
+        await patchV3Survey(
+          draftWithTrigger,
+          {
+            status: "inProgress",
+            distribution: { triggers: [{ actionClassId: actionClass.id }], showConditions: null },
+          },
+          "req_app_patch_sc7",
+          "org_1"
+        );
+
+        expect(vi.mocked(prisma.survey.update).mock.calls[0][0].data.showConditions).toBe(Prisma.DbNull);
+      });
     });
 
     test("updates segment filters when targeting changes and contacts are enabled", async () => {
@@ -1188,7 +1319,7 @@ describe("patchV3Survey", () => {
       processorVersion: 3,
     };
     const surveyWithCss = { ...currentSurvey, customCss: storedCss } as unknown as TSurvey;
-    const lastUpdateData = () => vi.mocked(prisma.survey.update).mock.lastCall?.[0].data ?? {};
+    const lastUpdateData = () => vi.mocked(prisma.survey.update).mock.calls.at(0)?.[0].data ?? {};
 
     beforeEach(() => {
       vi.mocked(cache.del).mockResolvedValue({ ok: true, data: undefined });

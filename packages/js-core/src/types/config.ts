@@ -1,3 +1,5 @@
+import type { TShowConditions } from "@formbricks/types/show-conditions";
+
 type TJsonObject = Record<string, unknown>;
 
 /** Respondent-facing compiled custom CSS for one scope (mirrors `TCustomCssCompiled` in @formbricks/types). */
@@ -81,6 +83,7 @@ export interface TWorkspaceStateSurvey {
   autoSelectLanguage?: boolean | null;
   endings: TJsonObject[];
   autoClose: number | null;
+  keepEndingCardOpen?: boolean;
   status: "draft" | "inProgress" | "paused" | "completed";
   // This variable should be called `cooldownPeriod`, not `recontactDays`. It is related to the
   // Survey Cooldown Period feature (across surveys) and not the Recontact Options (per survey).
@@ -113,6 +116,8 @@ export interface TWorkspaceStateSurvey {
   // Minimal segment shape; full filter logic is evaluated server-side and must not reach the browser.
   segment?: { id: string; hasFilters: boolean };
   displayPercentage: number | null;
+  // Show conditions checked when a trigger fires (ENG-3926). Absent when the server predates them.
+  showConditions?: TShowConditions;
   styling?: TSurveyStyling;
   // Per-survey gate for the post-interaction segment refresh: whether an interaction with THIS survey
   // (display / response / finish) can change any live survey's membership. Absent for workspaces

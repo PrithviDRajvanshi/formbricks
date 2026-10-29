@@ -55,7 +55,8 @@
               "platform/introduction",
               "platform/what-is-formbricks",
               "platform/open-source",
-              "platform/accessibility"
+              "platform/accessibility",
+              "platform/changelog"
             ]
           },
           {
@@ -122,6 +123,7 @@
                   "surveys/general-features/limit-submissions",
                   "surveys/general-features/survey-scheduling",
                   "surveys/general-features/multi-language-surveys",
+                  "surveys/general-features/migrate-from-qualtrics",
                   "surveys/general-features/partial-submissions",
                   "surveys/general-features/recall",
                   "surveys/general-features/metadata",
@@ -189,6 +191,7 @@
                       "surveys/website-app-surveys/actions",
                       "surveys/website-app-surveys/user-identification",
                       "surveys/website-app-surveys/attribute-based-targeting",
+                      "surveys/website-app-surveys/show-conditions",
                       "surveys/website-app-surveys/recontact",
                       "surveys/website-app-surveys/cooldown-period",
                       "surveys/website-app-surveys/survey-display-logic",
@@ -371,6 +374,7 @@
             "group": "Advanced",
             "pages": [
               "self-hosting/advanced/release-maintenance-policy",
+              "self-hosting/advanced/upgrade",
               "self-hosting/advanced/migration",
               "self-hosting/advanced/v6-maintenance-upgrade",
               "self-hosting/advanced/migrating-surveys",

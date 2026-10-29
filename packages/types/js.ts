@@ -20,6 +20,7 @@ export const ZJsWorkspaceStateSurvey = ZSurveyBase.pick({
   languages: true,
   endings: true,
   autoClose: true,
+  keepEndingCardOpen: true,
   styling: true,
   status: true,
   segment: true,
@@ -37,6 +38,7 @@ export const ZJsWorkspaceStateSurvey = ZSurveyBase.pick({
   isBackButtonHidden: true,
   isAutoProgressingEnabled: true,
   recaptcha: true,
+  showConditions: true,
 })
   .extend({
     // Resolved custom overlay, set by the environment endpoint (see environment/lib/data.ts).

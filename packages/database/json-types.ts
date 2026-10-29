@@ -21,17 +21,20 @@ import {
   type TResponseVariables,
 } from "@formbricks/types/responses";
 import { type TBaseFilters } from "@formbricks/types/segment";
+import type { TShowConditionGroup } from "@formbricks/types/show-conditions";
 import { type TSurveyBlock } from "@formbricks/types/surveys/blocks";
 import type { TSurveyFollowUpAction, TSurveyFollowUpTrigger } from "@formbricks/types/surveys/follow-up";
 import {
   type TSurveyClosedMessage,
   type TSurveyEnding,
+  type TSurveyHiddenFields,
   type TSurveyInlineTriggers,
   type TSurveyMetadata,
   type TSurveyQuestions,
   type TSurveyRecaptcha,
   type TSurveySingleUse,
   type TSurveyStyling,
+  type TSurveyVariables,
   type TSurveyWelcomeCard,
   type TSurveyWorkspaceOverwrites,
 } from "@formbricks/types/surveys/types";
@@ -62,12 +65,15 @@ declare global {
     export type SurveyQuestions = TSurveyQuestions;
     export type SurveyBlocks = TSurveyBlock;
     export type SurveyEnding = TSurveyEnding;
+    export type SurveyHiddenFields = TSurveyHiddenFields;
+    export type SurveyVariables = TSurveyVariables;
     export type SurveyInlineTriggers = TSurveyInlineTriggers;
     export type SurveyWorkspaceOverwrites = TSurveyWorkspaceOverwrites;
     export type SurveyStyling = TSurveyStyling;
     export type SurveyClosedMessage = TSurveyClosedMessage;
     export type SurveySingleUse = TSurveySingleUse;
     export type SurveyRecaptcha = TSurveyRecaptcha;
+    export type SurveyShowConditions = TShowConditionGroup;
     export type SurveyLinkMetadata = TSurveyMetadata;
     export type OrganizationBilling = TOrganizationBilling;
     export type OrganizationBillingPlanLimits = TOrganizationBillingPlanLimits;
