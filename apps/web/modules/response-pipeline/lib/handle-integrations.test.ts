@@ -405,6 +405,38 @@ describe("handleIntegrations", () => {
   });
 
   describe("Google Sheets Integration", () => {
+    test("keeps an empty first answer in its selected column", async () => {
+      vi.mocked(googleSheetWriteData).mockResolvedValue(undefined);
+      const unansweredFirstQuestion: TIntegrationPipelineInput = {
+        ...mockPipelineInput,
+        response: {
+          ...mockPipelineInput.response,
+          data: { [questionId2]: ["Choice 1", "Choice 2"] },
+        },
+      };
+      const integration: TIntegrationGoogleSheets = {
+        ...mockGoogleSheetsIntegration,
+        config: {
+          ...mockGoogleSheetsIntegration.config,
+          data: [
+            {
+              ...mockGoogleSheetsIntegration.config.data[0],
+              elementIds: [questionId1, questionId2],
+            },
+          ],
+        },
+      };
+
+      await handleIntegrations([integration], unansweredFirstQuestion, mockSurvey);
+
+      expect(googleSheetWriteData).toHaveBeenCalledWith(
+        expect.anything(),
+        "sheet1",
+        ["", "Choice 1, Choice 2"],
+        ["Question 1 {{recall:q2}}", "Question 2"]
+      );
+    });
+
     test("should call googleSheetWriteData with correct parameters", async () => {
       vi.mocked(googleSheetWriteData).mockResolvedValue(undefined);
       await handleIntegrations([mockGoogleSheetsIntegration], mockPipelineInput, mockSurvey);

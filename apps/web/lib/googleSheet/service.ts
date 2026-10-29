@@ -89,7 +89,9 @@ export const writeData = async (
       sheets.spreadsheets.values.append(
         {
           spreadsheetId: spreadsheetId,
-          range: "A2",
+          // Search across response columns while keeping table detection below the header row.
+          // A single-column A2 range can miss rows whose first response cell is empty.
+          range: "A2:ZZ",
           valueInputOption: "RAW",
           requestBody: responsesMapped,
         },

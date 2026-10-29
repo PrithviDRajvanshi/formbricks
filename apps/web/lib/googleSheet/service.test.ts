@@ -183,4 +183,108 @@ describe("writeData", () => {
 
     expect(completed).toEqual(["update", "append"]);
   });
+
+  test("appends distinct rows when the first response cell is empty and preserves existing rows", async () => {
+    const sheet: string[][] = [
+      ["Statement", "Answer"],
+      ["", "earlier response"],
+    ];
+
+    // Test assumption, not a verified implementation of Google's table detection: a search
+    // limited to column A misses this table when A2 is blank and writes at A2 again. A range
+    // spanning response columns finds the existing row by its populated later cells.
+    const simulateAppendPlacement = (target: string[][], range: string, row: string[]) => {
+      const searchOnlyFirstColumn = range === "A2";
+      const lastMatchingRow = target.reduce((last, existingRow, index) => {
+        if (index === 0) return last; // The append search starts below the header row.
+        const hasDataInSearchRange = searchOnlyFirstColumn
+          ? existingRow[0] !== ""
+          : existingRow.some((cell) => cell !== "");
+        return hasDataInSearchRange ? index : last;
+      }, 0);
+      const destinationRow = searchOnlyFirstColumn && lastMatchingRow === 0 ? 1 : lastMatchingRow + 1;
+      target[destinationRow] = row;
+    };
+
+    // Explicitly show the regression represented by the assumption: the second old-range
+    // write targets A2 again and replaces the first response row.
+    const oldRangeSheet = structuredClone(sheet);
+    simulateAppendPlacement(oldRangeSheet, "A2", ["", "first new response"]);
+    simulateAppendPlacement(oldRangeSheet, "A2", ["", "second new response"]);
+    expect(oldRangeSheet).toEqual([
+      ["Statement", "Answer"],
+      ["", "second new response"],
+    ]);
+
+    sheetsMock.update.mockImplementation(
+      (
+        params: { range: string; requestBody: { values: string[][] } },
+        callback: (err: Error | null) => void
+      ) => {
+        setTimeout(() => {
+          if (params.range === "A1") sheet[0] = params.requestBody.values[0];
+          callback(null);
+        }, 0);
+      }
+    );
+    sheetsMock.append.mockImplementation(
+      (
+        params: { range: string; requestBody: { values: string[][] } },
+        callback: (err: Error | null) => void
+      ) => {
+        setTimeout(() => {
+          simulateAppendPlacement(sheet, params.range, params.requestBody.values[0]);
+          callback(null);
+        }, 0);
+      }
+    );
+
+    await writeData(authorizedIntegration, "sheet1", ["", "first new response"], ["Statement", "Answer"]);
+    await writeData(authorizedIntegration, "sheet1", ["", "second new response"], ["Statement", "Answer"]);
+
+    expect(sheet).toEqual([
+      ["Statement", "Answer"],
+      ["", "earlier response"],
+      ["", "first new response"],
+      ["", "second new response"],
+    ]);
+    expect(sheetsMock.append.mock.calls.map(([params]) => params.range)).toEqual(["A2:ZZ", "A2:ZZ"]);
+    expect(sheetsMock.append).toHaveBeenCalledTimes(2);
+    expect(sheetsMock.append.mock.calls.map(([params]) => params.requestBody.values[0])).toEqual([
+      ["", "first new response"],
+      ["", "second new response"],
+    ]);
+  });
+
+  test("continues appending responses whose first cell is non-empty", async () => {
+    const sheet: string[][] = [["Statement", "Answer"]];
+    sheetsMock.update.mockImplementation(
+      (
+        _params: { range: string; requestBody: { values: string[][] } },
+        callback: (err: Error | null) => void
+      ) => {
+        setTimeout(() => callback(null), 0);
+      }
+    );
+    sheetsMock.append.mockImplementation(
+      (
+        params: { range: string; requestBody: { values: string[][] } },
+        callback: (err: Error | null) => void
+      ) => {
+        setTimeout(() => {
+          sheet.push(params.requestBody.values[0]);
+          callback(null);
+        }, 0);
+      }
+    );
+
+    await writeData(authorizedIntegration, "sheet1", ["first", "answer 1"], ["Statement", "Answer"]);
+    await writeData(authorizedIntegration, "sheet1", ["second", "answer 2"], ["Statement", "Answer"]);
+
+    expect(sheet).toEqual([
+      ["Statement", "Answer"],
+      ["first", "answer 1"],
+      ["second", "answer 2"],
+    ]);
+  });
 });
